@@ -3,6 +3,7 @@ using UnityEngine;
 
 public class MoveStealingLight : MonoBehaviour
 {
+
     private float speed, biasX, biasY;
     private float x, y;
 
