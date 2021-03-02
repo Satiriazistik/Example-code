@@ -3,6 +3,7 @@ using UnityEngine;
 
 public class ShowMainMenuButton : MonoBehaviour
 {
+
     public static bool readyWork;
 
     private SpriteRenderer button1Renderer,
