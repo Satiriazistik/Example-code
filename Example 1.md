@@ -2,9 +2,9 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-
 public struct MainButton
 {
+
     public SpriteRenderer buttonSprite;
     public Color buttonColor;
     public Vector2 finalPos;
@@ -13,6 +13,7 @@ public struct MainButton
 
 public class ShowMainButtonTest : MonoBehaviour
 {
+
     public static bool readyWork;
 
     private float speedButton, speedAlphaChange, speedVanishing;
