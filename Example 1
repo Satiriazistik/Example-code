@@ -1,0 +1,263 @@
+*** Приведенный код отрисовывает голограммы заданных префабов в заданных якорных точках пространства ***
+
+using Sirenix.OdinInspector;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+public class HologramVisualizer : MonoBehaviour
+{
+        #region Public Vars
+
+        [BoxGroup("Settings")]
+        public List<HologramSettings> Holograms;
+        [InfoBox("Only if needed!")]
+        public bool UpdateAnchorPosition;
+
+
+        [BoxGroup("Debug")]
+        public bool DebugVisualisation;
+        [BoxGroup("Debug")]
+        public Material DebugMaterial;
+        [BoxGroup("Debug")]
+        public Color GizmoColor;
+
+        #endregion
+
+        #region Private Vars
+
+        private Dictionary<HologramSettings, List<MeshTRS>> _hologramMeshes = 
+            new Dictionary<HologramSettings, List<MeshTRS>>();
+
+        //Debug
+        private Dictionary<HologramSettings, List<MeshTRS>> _debugHologramMeshes =
+            new Dictionary<HologramSettings, List<MeshTRS>>();
+
+        private List<MeshTRS> _debugCachedMeshTRS = new List<MeshTRS>();
+
+        #endregion
+
+        #region Unity Methods
+
+        private void Start()
+        {
+            foreach (var hologram in Holograms)
+            {
+                var sourcePrefab = ResourceManager.Instance.GetSourcePrefab(hologram.ReferencesIdentifier.prefabGUID);
+                var LODGroup = sourcePrefab.GetComponentInChildren<LODGroup>();
+                if (LODGroup == null)
+                    return;
+
+                var LODs = LODGroup.GetLODs();
+
+                var meshFilters = LODs[0].renderers.Where(r => r.GetComponent<MeshFilter>() != null).Select(r => r.GetComponent<MeshFilter>()).ToList();
+                meshFilters = RemoveInactive(meshFilters);
+                var meshesByMeshFilter = meshFilters.Select(mr => mr.sharedMesh).ToList();
+
+                var skinnedMeshes = LODs[0].renderers.Where(r => r.GetComponent<SkinnedMeshRenderer>() != null).Select(r => r.GetComponent<SkinnedMeshRenderer>()).ToList();
+                skinnedMeshes = RemoveInactive(skinnedMeshes);
+                var meshesBySkinnedMesh = skinnedMeshes.Select(mr => mr.sharedMesh).ToList();
+
+                List<Mesh> meshes = new List<Mesh>();
+                meshes.AddRange(meshesBySkinnedMesh);
+                meshes.AddRange(meshesByMeshFilter);
+
+                var cachedMeshTRS = new List<MeshTRS>();
+                foreach (var mesh in meshes)
+                {
+                    var meshTRS = new MeshTRS();
+                    meshTRS.Mesh = mesh;
+
+                    var targetTransformTRS = hologram.HologramAnchor.localToWorldMatrix;
+                    meshTRS.TRS = targetTransformTRS;
+
+                    cachedMeshTRS.Add(meshTRS);
+                }
+
+                
+                _hologramMeshes.Add(hologram, cachedMeshTRS);
+            }
+        }
+
+       
+        void Update()
+        {
+            if (UpdateAncorPosition)
+            {
+                foreach (var hologram in Holograms)
+                {
+                    var cachedMeshTRS = new List<MeshTRS>();
+                    foreach (var meshTRS in _hologramMeshes[hologram])
+                    {
+                        var newMeshTRS = new MeshTRS();
+                        newMeshTRS.Mesh = meshTRS.Mesh;
+
+                        var targetTransformTRS = hologram.HologramAnchor.localToWorldMatrix;
+                        newMeshTRS.TRS = targetTransformTRS;
+
+                        cachedMeshTRS.Add(newMeshTRS);
+                    }
+
+                    _hologramMeshes[hologram] = cachedMeshTRS;
+                }
+            }
+
+            DrawVisualizationOfComponents();
+        }
+
+        void OnDrawGizmos()
+        {
+            Gizmos.color = GizmoColor;
+             
+            if (DebugVisualisation)
+            {
+                foreach (var hologram in Holograms)
+                {
+                    var sourcePrefabPath = AssetDatabase.GUIDToAssetPath(hologram.ReferencesIdentifier.prefabGUID);
+                    var sourcePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(sourcePrefabPath);
+
+                    var LODGroup = sourcePrefab.GetComponentInChildren<LODGroup>();
+                    if (LODGroup == null)
+                        return;
+
+                    var LODs = LODGroup.GetLODs();
+
+                    var meshFilters = LODs[0].renderers.Where(r => r.GetComponent<MeshFilter>() != null).Select(r => r.GetComponent<MeshFilter>()).ToList();
+                    meshFilters = RemoveInactive(meshFilters);
+                    var meshesByMeshFilter = meshFilters.Select(mr => mr.sharedMesh).ToList();
+
+                    var skinnedMeshes = LODs[0].renderers.Where(r => r.GetComponent<SkinnedMeshRenderer>() != null).Select(r => r.GetComponent<SkinnedMeshRenderer>()).ToList();
+                    skinnedMeshes = RemoveInactive(skinnedMeshes);
+                    var meshesBySkinnedMesh = skinnedMeshes.Select(mr => mr.sharedMesh).ToList();
+
+                    List<Mesh> meshes = new List<Mesh>();
+                    meshes.AddRange(meshesBySkinnedMesh);
+                    meshes.AddRange(meshesByMeshFilter);
+
+                    for (int i = 0; i < meshes.Count; i++)
+                    {
+                        Gizmos.DrawMesh(meshes[i], hologram.HologramAnchor.position,
+                            hologram.HologramAnchor.rotation, hologram.HologramAnchor.localScale);
+                    }
+                }
+            }
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        private void DrawVisualizationOfComponents()
+        {
+            foreach (var meshTRSs in _hologramMeshes.Values)
+            {
+                foreach (var meshTRS in meshTRSs)
+                    Graphics.DrawMesh(meshTRS.Mesh, meshTRS.TRS, DefaultResourcesData.Instance.defaultHighlightMaterial, 0);
+            }
+        }
+
+        private List<MeshFilter> RemoveInactive(List<MeshFilter> renderers)
+        {
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                var exitWhile = false;
+                var validMesh = renderers[i].gameObject.activeSelf;
+
+                if (!validMesh)
+                    exitWhile = true;
+
+                var previousParent = renderers[i].transform.parent;
+                var curParent = renderers[i].transform.parent;
+
+                while (!exitWhile)
+                {
+                    if (curParent != null)
+                    {
+                        if (!curParent.gameObject.activeSelf)
+                        {
+                            exitWhile = true;
+                            validMesh = false;
+                        }
+                    }
+                    else
+                    {
+                        exitWhile = true;
+                    }
+
+                    var parentSave = curParent;
+                    curParent = previousParent.transform.parent;
+                    previousParent = parentSave;
+                }
+
+                if (!validMesh)
+                {
+                    renderers.Remove(renderers[i]);
+                    i--;
+                }
+            }
+
+            return renderers;
+        }
+
+        private List<SkinnedMeshRenderer> RemoveInactive(List<SkinnedMeshRenderer> renderers)
+        {
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                var exitWhile = false;
+                var validMesh = renderers[i].gameObject.activeSelf;
+
+                if (!validMesh)
+                    exitWhile = true;
+
+                var previousParent = renderers[i].transform.parent;
+                var curParent = renderers[i].transform.parent;
+
+                while (!exitWhile)
+                {
+                    if (curParent != null)
+                    {
+                        if (!curParent.gameObject.activeSelf)
+                        {
+                            exitWhile = true;
+                            validMesh = false;
+                        }
+                    }
+                    else
+                    {
+                        exitWhile = true;
+                    }
+
+                    var parentSave = curParent;
+                    curParent = previousParent.transform.parent;
+                    previousParent = parentSave;
+                }
+
+                if (!validMesh)
+                {
+                    renderers.Remove(renderers[i]);
+                    i--;
+                }
+            }
+
+            return renderers;
+        }
+
+        #endregion
+
+        [Serializable]
+        public struct HologramSettings
+        {
+            public PrefabIdentifier ReferencesIdentifier;
+            public Transform HologramAnchor;
+        }
+
+        [Serializable]	
+        public struct MeshTRS
+        {
+            public Mesh Mesh;
+            public Matrix4x4 TRS;
+        }
+}
