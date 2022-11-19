@@ -1,0 +1,141 @@
+*** Код ниже расчитывает реальные размеры рендера объекта, и использует данные для нахождения высоты, длины и ширины объекта, 
+чтобы в дальнейшем автоматически ориентировать его например внутри рюкзака ***
+
+using HurricaneVR.Framework.Core.Sockets.ConcreteFilters;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class SocketOrientationCalculation
+{
+        public static bool EnableSocketOrientationCalculation;
+
+        private static Transform _socketOrientation;
+        private static GameObject _linkedObject;
+
+        private static List<MeshRenderer> _meshRenderersBuffer = new List<MeshRenderer>(32);
+
+        public static void CalculateSocketOrientation (GameObject linkedObject)
+        {
+            _linkedObject = linkedObject;
+
+            if (_linkedObject.TryGetComponent<ItemsSocketable>(out var socketable))
+            {
+                if (socketable.SocketOrientation == null)
+                {
+                    var socketOrientation = new GameObject();
+                    var COMgoInstance = GameObject.Instantiate(socketOrientation, _linkedObject.transform.position, Quaternion.identity);
+                    COMgoInstance.name = "Socket Orientation";
+                    COMgoInstance.transform.SetParent(_linkedObject.transform);
+                    _socketOrientation = socketOrientation.transform;
+                }
+                else
+                    _socketOrientation = socketable.SocketOrientation;
+
+               CalculateSocketOrientation();
+            }
+        }
+
+
+        private static void CalculateSocketOrientation()
+        {
+            _linkedObject.GetComponentsInChildren<MeshRenderer>(_meshRenderersBuffer);
+
+            var widestRenderer = FindWidestMeshRenderer(_meshRenderersBuffer);
+
+            var widestRendererTransform = widestRenderer.transform;
+
+            Bounds rootBounds = default;
+            bool rootBoundsIsSet = false;
+
+
+            foreach (var meshRenderer in _meshRenderersBuffer)
+            {
+                if (meshRenderer.TryGetComponent<MeshFilter>(out var meshFilter))
+                {
+                    var max = meshFilter.sharedMesh.bounds.max;
+                    var min = meshFilter.sharedMesh.bounds.min;
+
+                    var meshTransform = meshFilter.transform;
+
+                    var meshToWidestTRS = meshTransform.localToWorldMatrix * widestRendererTransform.worldToLocalMatrix;
+
+                    var b0 = meshToWidestTRS * new Vector3(min.x, min.y, min.z);
+                    var b1 = meshToWidestTRS * new Vector3(min.x, max.y, min.z);
+                    var b2 = meshToWidestTRS * new Vector3(max.x, max.y, min.z);
+                    var b3 = meshToWidestTRS * new Vector3(max.x, min.y, min.z);
+                    var b4 = meshToWidestTRS * new Vector3(min.x, min.y, max.z);
+                    var b5 = meshToWidestTRS * new Vector3(min.x, max.y, max.z);
+                    var b6 = meshToWidestTRS * new Vector3(max.x, max.y, max.z);
+                    var b7 = meshToWidestTRS * new Vector3(max.x, min.y, max.z);
+
+                    if (!rootBoundsIsSet)
+                    {
+                        rootBounds = new Bounds(
+                            center: b0,
+                            size: Vector3.zero
+                        );
+
+                        rootBoundsIsSet = true;
+                    }
+
+                    rootBounds.Encapsulate(b0);
+                    rootBounds.Encapsulate(b1);
+                    rootBounds.Encapsulate(b2);
+                    rootBounds.Encapsulate(b3);
+                    rootBounds.Encapsulate(b4);
+                    rootBounds.Encapsulate(b5);
+                    rootBounds.Encapsulate(b6);
+                    rootBounds.Encapsulate(b7);
+                }
+            }
+
+            Vector3 longestAxis = new Vector3();
+            Vector3 shortestAxis = new Vector3();
+
+            var maxExtent = Mathf.Max(rootBounds.extents.x, rootBounds.extents.y, rootBounds.extents.z);
+            if (maxExtent == rootBounds.extents.x)
+                longestAxis = widestRendererTransform.right;
+            else if (maxExtent == rootBounds.extents.y)
+                longestAxis = widestRendererTransform.up;
+            else if (maxExtent == rootBounds.extents.z)
+                longestAxis = widestRendererTransform.forward;
+
+            var minExtent = Mathf.Min(rootBounds.extents.x, rootBounds.extents.y, rootBounds.extents.z);
+            if (minExtent == rootBounds.extents.x)
+                shortestAxis = widestRendererTransform.right;
+            else if (minExtent == rootBounds.extents.y)
+                shortestAxis = widestRendererTransform.up;
+            else if (minExtent == rootBounds.extents.z)
+                shortestAxis = widestRendererTransform.forward;
+
+            _socketOrientation.rotation = Quaternion.LookRotation(shortestAxis, longestAxis);
+
+            _meshRenderersBuffer.Clear();
+        }
+
+        public static MeshRenderer FindWidestMeshRenderer(List<MeshRenderer> meshRenderers)
+        {
+            float distance = 0f;
+            MeshRenderer targetMeshRenderer = default;
+
+            foreach (var meshRenderer in meshRenderers)
+            {
+                if (meshRenderer.TryGetComponent<MeshFilter>(out var meshFilter))
+                {
+                    var max = meshFilter.sharedMesh.bounds.max;
+                    var min = meshFilter.sharedMesh.bounds.min;
+
+                    var curDistance = Vector3.Distance(min, max);
+
+                    if (curDistance > distance)
+                    {
+                        distance = curDistance;
+                        targetMeshRenderer = meshRenderer;
+                    }
+                }
+            }
+
+            return targetMeshRenderer;
+        }
+
+}
