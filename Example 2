@@ -1,0 +1,419 @@
+*** Система спауна противников ***
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using EmeraldAI;
+using Photon.Pun;
+using Sirenix.OdinInspector;
+using UnityEngine;
+using UnityEngine.Events;
+using UnityEngine.Serialization;
+
+[RequireComponent(typeof(PhotonView))]
+    public class HordeModeWaveDirector : MonoSingleton<HordeModeWaveDirector>
+    {
+        [Serializable]
+        public enum PhaseType
+        {
+            Calm,
+            Wave
+        }
+        
+        [Serializable]
+        public struct ZombieType
+        {
+            [FormerlySerializedAs("ZombiePrefab")] [BoxGroup("Settings")]
+            public PrefabIdentifier ZombiePrefabIdentifier;
+            [BoxGroup("Settings")]
+            public float SpawnDelay;
+            [BoxGroup("Settings")]
+            public int ZombieLimit;
+            [BoxGroup("Settings")]
+            public int Cost;
+        }
+        
+        [Serializable]
+        public struct Phase
+        {
+            [BoxGroup("Phase Settings")]
+            [LabelText("Type")]
+            public PhaseType Type;
+            [BoxGroup("Phase Settings")] 
+            public float PhaseDuration;
+            
+            [FormerlySerializedAs("CalmPhaseDurationTime")]
+            [HideIfGroup("Calm Phase", Condition = "@"+ nameof(Type) + "==HordeModeWaveDirector.PhaseType.Wave")]
+            [Space]
+            [BoxGroup("Calm Phase/Calm Phase Settings")]
+            [LabelText("Start Events")]
+            public UnityEvent CalmPhaseStartEvents;
+            [BoxGroup("Calm Phase/Calm Phase Settings")]
+            [LabelText("End Events")]
+            public UnityEvent CalmPhaseEndEvents;
+            
+            [FormerlySerializedAs("WavePhaseDurationTime")]
+            [HideIfGroup("Wave Phase", Condition = "@"+ nameof(Type) + "==HordeModeWaveDirector.PhaseType.Calm")]
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            public int OverallLimit;
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            public int Budget;
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            public float SpawnTickDelay;
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            public List<ZombieType> AvailableZombie;
+            
+            [Space]
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            [LabelText("Start Events")]
+            public UnityEvent WavePhaseStartEvents;
+            [BoxGroup("Wave Phase/Wave Phase Settings")]
+            [LabelText("End Events")]
+            public UnityEvent WavePhaseEndEvents;
+        }
+
+        public static Action OnWavesEnded;
+
+        [BoxGroup("Settings")]
+        public bool StartSequenceOnStartGame = true;
+        [BoxGroup("Settings")]
+        public HordeModeZombieSpawner Spawner;
+        [BoxGroup("Settings")]
+        public bool ForcedSpawn;
+        [BoxGroup("Settings")]
+        [Tooltip("Disables spawning of zombies when there is less than the specified time before the end of the wave")]
+        public float StopSpawnTimeLimit;
+        [BoxGroup("Settings")] 
+        public float CalmPhaseZombieKillDelay;
+        [BoxGroup("Settings")]
+        public int ZombieLimitForStartKillTimer = 3;
+        [BoxGroup("Settings")]
+        public List<Phase> Phases = new List<Phase>();
+
+ 
+        [HideInInspector]
+        public int CurrentPhaseIndex = 0;
+
+        
+        private PhotonView _photonView;
+
+        private double _currentPhaseStartTime;
+
+        private List<PrefabIdentifier> _currentSpawnZombieSet = new List<PrefabIdentifier>();
+
+        private List<EmeraldAISystem> _aliveZombiesAI = new List<EmeraldAISystem>();
+
+        private Coroutine _killZombieTimer;
+
+        private bool _zombieKillTimerStartedInCalmPhase, _sendToPlayerRemainingZombiesCount, _sequenceStarted;
+
+        protected override void Awake()
+        {
+            base.Awake();
+
+            if(_photonView == null)
+                _photonView = GetComponent<PhotonView>();
+            
+            if (!_photonView.IsMine)
+                return;
+
+            Spawner.ZombieIsSpawned += ZombieIsSpawned;
+            
+            if (StartSequenceOnStartGame)
+                RoomManager.OnGameStart += StartWaveDirectorSequence;
+        }
+
+        private void OnValidate()
+        {
+            if(_photonView == null)
+                _photonView = GetComponent<PhotonView>();
+        }
+
+        private void Update()
+        {
+            if (!PhotonNetwork.IsMasterClient)
+                return;
+
+            if (_aliveZombiesAI.Count > 0)
+            {
+                for (int i = 0; i < _aliveZombiesAI.Count; i++)
+                {
+                    if (_aliveZombiesAI[i] == null || _aliveZombiesAI[i].IsDead)
+                    {
+                        _aliveZombiesAI.RemoveAt(i);
+                        if (_sendToPlayerRemainingZombiesCount)
+                            _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All, _aliveZombiesAI.Count);
+                        //_photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All,
+                        //    _aliveZombiesAI.Count);
+                        i--;
+                    }
+                }
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (!_photonView.IsMine)
+                return;
+            
+            RoomManager.OnGameStart -= StartWaveDirectorSequence;
+            Spawner.ZombieIsSpawned -= ZombieIsSpawned;
+        }
+
+        public void StartWaveDirectorSequence()
+        {
+            if (_sequenceStarted || !_photonView.IsMine)
+                return;
+            
+            _sequenceStarted = true;
+            
+            if (Phases[CurrentPhaseIndex].Type == PhaseType.Calm)
+                StartCoroutine(CalmPhaseProcess());
+            else if (Phases[CurrentPhaseIndex].Type == PhaseType.Wave)
+                StartCoroutine(WavePhaseProcess());
+        }
+
+        public void KillAllAliveZombie()
+        {
+            var damageInfo = new DamageInfo();
+            damageInfo.Damage = 10000;
+
+            for (int i = 0; i < _aliveZombiesAI.Count; i++)
+            {
+                var zombieAI = _aliveZombiesAI[i].GetComponent<NetworkEnemy>();
+
+                zombieAI.ApplyDamage(Actor.PlayerLocal(), damageInfo);
+            }
+            
+            _aliveZombiesAI.Clear();
+        }
+
+        private void SpawnTick()
+        {
+            //TODO: проверка не превышен ли лимит живых зомби
+            if (_aliveZombiesAI.Count >= Phases[CurrentPhaseIndex].OverallLimit)
+                return;
+            
+            //TODO: заполнение сетапа зомби для передачи спаунеру
+            var elapsedTime = PhotonNetwork.Time - _currentPhaseStartTime;
+            var currentBudget = Phases[CurrentPhaseIndex].Budget * (PhotonNetwork.PlayerList.Length + 1) / 2;
+            var addZobiesCount = 0;
+            
+            while (currentBudget > 0 && _aliveZombiesAI.Count + _currentSpawnZombieSet.Count < Phases[CurrentPhaseIndex].OverallLimit)
+            {
+                addZobiesCount = _currentSpawnZombieSet.Count;
+                foreach (var zombie in Phases[CurrentPhaseIndex].AvailableZombie)
+                {
+                    if (_aliveZombiesAI.Count + _currentSpawnZombieSet.Count < Phases[CurrentPhaseIndex].OverallLimit
+                        && zombie.SpawnDelay <= elapsedTime
+                        && currentBudget - zombie.Cost >= 0
+                        && ZombieTypeLimitNotExceeded(zombie, _currentSpawnZombieSet))
+                    {
+                        _currentSpawnZombieSet.Add(zombie.ZombiePrefabIdentifier);
+                        currentBudget -= zombie.Cost;
+                        Debug.LogFormat("ZombieSpawned {0}", zombie.ZombiePrefabIdentifier.prefabName);
+                        Debug.LogFormat("Budget: {0}", currentBudget);
+                    }
+                }
+                
+                if (addZobiesCount == _currentSpawnZombieSet.Count)
+                    break;
+                
+            }
+
+            //TODO: дозаполнение сетапа последним зомби в списке возможных,
+            //если бюджет закончился, но общее количество зомби не достигло предела
+            var limitRemainder = Phases[CurrentPhaseIndex].OverallLimit - _currentSpawnZombieSet.Count -
+                                 _aliveZombiesAI.Count;
+
+            if (limitRemainder > 0)
+            {
+                var lastAvailableZombieIndex = Phases[CurrentPhaseIndex].AvailableZombie.Count - 1;
+                for (int i = 0; i < limitRemainder; i++)
+                {
+                    if (Phases[CurrentPhaseIndex].AvailableZombie[lastAvailableZombieIndex].SpawnDelay <= elapsedTime)
+                        _currentSpawnZombieSet.Add(Phases[CurrentPhaseIndex].AvailableZombie[lastAvailableZombieIndex].ZombiePrefabIdentifier);
+                }
+            }
+             
+            if (_currentSpawnZombieSet.Count > 0)
+            {
+                //TODO: посылаем спаунеру сет зомби для спауна
+                Spawner.Spawn(_currentSpawnZombieSet);
+                _currentSpawnZombieSet.Clear();
+            }
+
+        }
+
+        private bool ZombieTypeLimitNotExceeded(ZombieType zombie, List<PrefabIdentifier> currentZombieSetList)
+        {
+            var counter = 0;
+            foreach (var zombieAI in _aliveZombiesAI)
+            {
+                var identifier = zombieAI.GetComponent<PrefabIdentifier>();
+                if (zombie.ZombiePrefabIdentifier == identifier)
+                    counter++;
+            }
+
+            foreach (var zombieIdentifier in currentZombieSetList)
+            {
+                if (zombie.ZombiePrefabIdentifier == zombieIdentifier)
+                    counter++;
+            }
+            
+            Debug.LogFormat("Current next zombie count: {0}", counter);
+
+            if (counter < zombie.ZombieLimit)
+                return true;
+            
+            return false;
+        }
+        
+        private void ZombieIsSpawned(GameObject zombie)
+        {
+            var zombieAI = zombie.GetComponent<EmeraldAISystem>();
+            if (zombieAI != null)
+                _aliveZombiesAI.Add(zombieAI);
+        }
+
+
+
+        void OnPhaseEnded()
+        {
+            CurrentPhaseIndex++;
+
+            if (CurrentPhaseIndex > Phases.Count - 1)
+            {
+                OnWavesEnded?.Invoke();
+                return;
+            }
+
+            if (Phases[CurrentPhaseIndex].Type == PhaseType.Calm)
+                StartCoroutine(CalmPhaseProcess());
+            else if (Phases[CurrentPhaseIndex].Type == PhaseType.Wave)
+                StartCoroutine(WavePhaseProcess());
+        }
+        
+        
+        IEnumerator CalmPhaseProcess()
+        {
+            Phases[CurrentPhaseIndex].CalmPhaseStartEvents.Invoke();
+            _currentPhaseStartTime = PhotonNetwork.Time;
+            
+            double doubleWaitTime = Phases[CurrentPhaseIndex].PhaseDuration + PhotonNetwork.Time;
+            double doubleRemainingPhaseTime = Phases[CurrentPhaseIndex].PhaseDuration;
+            
+            if (_aliveZombiesAI.Count <= 0)
+                _photonView.RPC(nameof(RPC_SendToPlayersWaveTimeDelay), RpcTarget.All, doubleWaitTime, true);
+            else
+            {
+                _sendToPlayerRemainingZombiesCount = true;
+                _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All, _aliveZombiesAI.Count);
+            }
+
+
+            while (doubleWaitTime > PhotonNetwork.Time)
+            {
+                if (_aliveZombiesAI.Count > 0 && _aliveZombiesAI.Count <= ZombieLimitForStartKillTimer &&
+                    _killZombieTimer == null)
+                {
+                    _killZombieTimer = StartCoroutine(KillZombieTimer());
+                    _zombieKillTimerStartedInCalmPhase = true;
+                    _sendToPlayerRemainingZombiesCount = true;
+                }
+
+                if (_aliveZombiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
+                {
+                    _sendToPlayerRemainingZombiesCount = false;
+                    _photonView.RPC(nameof(RPC_SendToPlayersWaveTimeDelay), RpcTarget.All, doubleRemainingPhaseTime + PhotonNetwork.Time, true);
+                    _zombieKillTimerStartedInCalmPhase = false;
+                    StopCoroutine(_killZombieTimer);
+                    _killZombieTimer = null;
+                }
+
+                doubleRemainingPhaseTime -= Time.deltaTime;
+                
+                yield return null;
+            }
+
+            while (_aliveZombiesAI.Count > 0 && _killZombieTimer == null)
+            {
+                if (_aliveZombiesAI.Count <= ZombieLimitForStartKillTimer)
+                {
+                    _killZombieTimer = StartCoroutine(KillZombieTimer());
+                    _zombieKillTimerStartedInCalmPhase = true;
+                }
+                yield return null;
+            }
+             
+
+            while (_killZombieTimer != null)
+            {
+                if (_aliveZombiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
+                {
+                    StopCoroutine(_killZombieTimer);
+                    _killZombieTimer = null;
+                }
+                
+                
+                yield return null;
+            }
+            
+            _zombieKillTimerStartedInCalmPhase = false;
+            _sendToPlayerRemainingZombiesCount = false;
+            Phases[CurrentPhaseIndex].CalmPhaseEndEvents.Invoke();
+            OnPhaseEnded();
+        }
+        
+        IEnumerator WavePhaseProcess()
+        {
+            Phases[CurrentPhaseIndex].WavePhaseStartEvents.Invoke();
+            _currentPhaseStartTime = PhotonNetwork.Time;
+            
+            double doubleWaitTime = Phases[CurrentPhaseIndex].PhaseDuration + PhotonNetwork.Time;
+            _photonView.RPC(nameof(RPC_SendToPlayersWaveTimeDelay), RpcTarget.All, doubleWaitTime, false);            
+            
+            var spawnDelay = 0f;
+            
+            while (doubleWaitTime > PhotonNetwork.Time)
+            {
+                if ((spawnDelay <= 0 || (ForcedSpawn && _aliveZombiesAI.Count == 0))
+                    && StopSpawnTimeLimit <= doubleWaitTime - PhotonNetwork.Time)
+                {
+                    SpawnTick();
+                    
+                    if (ForcedSpawn && _aliveZombiesAI.Count == 0)
+                        spawnDelay = Phases[CurrentPhaseIndex].SpawnTickDelay;
+                    else
+                        spawnDelay = Mathf.Abs(spawnDelay) + Phases[CurrentPhaseIndex].SpawnTickDelay;
+                }
+
+                spawnDelay -= Time.deltaTime;
+                
+                yield return null;
+            }
+            
+            Phases[CurrentPhaseIndex].WavePhaseEndEvents.Invoke();
+            OnPhaseEnded();
+        }
+
+        IEnumerator KillZombieTimer()
+        {
+            var delay = CalmPhaseZombieKillDelay;
+            while (delay > 0)
+            {
+                yield return null;
+                delay -= Time.deltaTime;
+            }
+            
+            KillAllAliveZombie();
+            _killZombieTimer = null;
+        }
+
+
+        [PunRPC]
+        private void RPC_SendToPlayersWaveTimeDelay(double time, bool isLullPhase) => PlayersManagers.LocalPlayer.Tablet.StartWaveWaitTimer(time, isLullPhase);
+        [PunRPC]
+        private void RPC_SendToPlayersRemainingNumberOfZombies(int count) => PlayersManagers.LocalPlayer.Tablet.SetRemainingNumberOfZombies(count);
+        
+}
