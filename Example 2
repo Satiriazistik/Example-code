@@ -21,14 +21,14 @@ using UnityEngine.Serialization;
         }
         
         [Serializable]
-        public struct ZombieType
+        public struct EnemyType
         {
-            [FormerlySerializedAs("ZombiePrefab")] [BoxGroup("Settings")]
-            public PrefabIdentifier ZombiePrefabIdentifier;
+            [FormerlySerializedAs("EnemyPrefab")] [BoxGroup("Settings")]
+            public PrefabIdentifier EnemyPrefabIdentifier;
             [BoxGroup("Settings")]
             public float SpawnDelay;
             [BoxGroup("Settings")]
-            public int ZombieLimit;
+            public int EnemyLimit;
             [BoxGroup("Settings")]
             public int Cost;
         }
@@ -61,7 +61,7 @@ using UnityEngine.Serialization;
             [BoxGroup("Wave Phase/Wave Phase Settings")]
             public float SpawnTickDelay;
             [BoxGroup("Wave Phase/Wave Phase Settings")]
-            public List<ZombieType> AvailableZombie;
+            public List<EnemyType> AvailableEnemy;
             
             [Space]
             [BoxGroup("Wave Phase/Wave Phase Settings")]
@@ -77,16 +77,16 @@ using UnityEngine.Serialization;
         [BoxGroup("Settings")]
         public bool StartSequenceOnStartGame = true;
         [BoxGroup("Settings")]
-        public HordeModeZombieSpawner Spawner;
+        public HordeModeEnemySpawner Spawner;
         [BoxGroup("Settings")]
         public bool ForcedSpawn;
         [BoxGroup("Settings")]
         [Tooltip("Disables spawning of zombies when there is less than the specified time before the end of the wave")]
         public float StopSpawnTimeLimit;
         [BoxGroup("Settings")] 
-        public float CalmPhaseZombieKillDelay;
+        public float CalmPhaseEnemyKillDelay;
         [BoxGroup("Settings")]
-        public int ZombieLimitForStartKillTimer = 3;
+        public int EnemyLimitForStartKillTimer = 3;
         [BoxGroup("Settings")]
         public List<Phase> Phases = new List<Phase>();
 
@@ -99,13 +99,13 @@ using UnityEngine.Serialization;
 
         private double _currentPhaseStartTime;
 
-        private List<PrefabIdentifier> _currentSpawnZombieSet = new List<PrefabIdentifier>();
+        private List<PrefabIdentifier> _currentSpawnEnemySet = new List<PrefabIdentifier>();
 
-        private List<EmeraldAISystem> _aliveZombiesAI = new List<EmeraldAISystem>();
+        private List<EmeraldAISystem> _aliveEnemiesAI = new List<EmeraldAISystem>();
 
-        private Coroutine _killZombieTimer;
+        private Coroutine _killEnemyTimer;
 
-        private bool _zombieKillTimerStartedInCalmPhase, _sendToPlayerRemainingZombiesCount, _sequenceStarted;
+        private bool _zombieKillTimerStartedInCalmPhase, _sendToPlayerRemainingEnemiesCount, _sequenceStarted;
 
         protected override void Awake()
         {
@@ -117,7 +117,7 @@ using UnityEngine.Serialization;
             if (!_photonView.IsMine)
                 return;
 
-            Spawner.ZombieIsSpawned += ZombieIsSpawned;
+            Spawner.EnemyIsSpawned += EnemyIsSpawned;
             
             if (StartSequenceOnStartGame)
                 RoomManager.OnGameStart += StartWaveDirectorSequence;
@@ -134,17 +134,17 @@ using UnityEngine.Serialization;
             if (!PhotonNetwork.IsMasterClient)
                 return;
 
-            if (_aliveZombiesAI.Count > 0)
+            if (_aliveEnemiesAI.Count > 0)
             {
-                for (int i = 0; i < _aliveZombiesAI.Count; i++)
+                for (int i = 0; i < _aliveEnemiesAI.Count; i++)
                 {
-                    if (_aliveZombiesAI[i] == null || _aliveZombiesAI[i].IsDead)
+                    if (_aliveEnemiesAI[i] == null || _aliveEnemiesAI[i].IsDead)
                     {
-                        _aliveZombiesAI.RemoveAt(i);
-                        if (_sendToPlayerRemainingZombiesCount)
-                            _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All, _aliveZombiesAI.Count);
-                        //_photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All,
-                        //    _aliveZombiesAI.Count);
+                        _aliveEnemiesAI.RemoveAt(i);
+                        if (_sendToPlayerRemainingEnemiesCount)
+                            _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfEnemies), RpcTarget.All, _aliveEnemiesAI.Count);
+                        //_photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfEnemies), RpcTarget.All,
+                        //    _aliveEnemiesAI.Count);
                         i--;
                     }
                 }
@@ -157,7 +157,7 @@ using UnityEngine.Serialization;
                 return;
             
             RoomManager.OnGameStart -= StartWaveDirectorSequence;
-            Spawner.ZombieIsSpawned -= ZombieIsSpawned;
+            Spawner.EnemyIsSpawned -= EnemyIsSpawned;
         }
 
         public void StartWaveDirectorSequence()
@@ -173,25 +173,25 @@ using UnityEngine.Serialization;
                 StartCoroutine(WavePhaseProcess());
         }
 
-        public void KillAllAliveZombie()
+        public void KillAllAliveEnemy()
         {
             var damageInfo = new DamageInfo();
             damageInfo.Damage = 10000;
 
-            for (int i = 0; i < _aliveZombiesAI.Count; i++)
+            for (int i = 0; i < _aliveEnemiesAI.Count; i++)
             {
-                var zombieAI = _aliveZombiesAI[i].GetComponent<NetworkEnemy>();
+                var zombieAI = _aliveEnemiesAI[i].GetComponent<NetworkEnemy>();
 
                 zombieAI.ApplyDamage(Actor.PlayerLocal(), damageInfo);
             }
             
-            _aliveZombiesAI.Clear();
+            _aliveEnemiesAI.Clear();
         }
 
         private void SpawnTick()
         {
             //TODO: проверка не превышен ли лимит живых зомби
-            if (_aliveZombiesAI.Count >= Phases[CurrentPhaseIndex].OverallLimit)
+            if (_aliveEnemiesAI.Count >= Phases[CurrentPhaseIndex].OverallLimit)
                 return;
             
             //TODO: заполнение сетапа зомби для передачи спаунеру
@@ -199,81 +199,81 @@ using UnityEngine.Serialization;
             var currentBudget = Phases[CurrentPhaseIndex].Budget * (PhotonNetwork.PlayerList.Length + 1) / 2;
             var addZobiesCount = 0;
             
-            while (currentBudget > 0 && _aliveZombiesAI.Count + _currentSpawnZombieSet.Count < Phases[CurrentPhaseIndex].OverallLimit)
+            while (currentBudget > 0 && _aliveEnemiesAI.Count + _currentSpawnEnemySet.Count < Phases[CurrentPhaseIndex].OverallLimit)
             {
-                addZobiesCount = _currentSpawnZombieSet.Count;
-                foreach (var zombie in Phases[CurrentPhaseIndex].AvailableZombie)
+                addZobiesCount = _currentSpawnEnemySet.Count;
+                foreach (var zombie in Phases[CurrentPhaseIndex].AvailableEnemy)
                 {
-                    if (_aliveZombiesAI.Count + _currentSpawnZombieSet.Count < Phases[CurrentPhaseIndex].OverallLimit
+                    if (_aliveEnemiesAI.Count + _currentSpawnEnemySet.Count < Phases[CurrentPhaseIndex].OverallLimit
                         && zombie.SpawnDelay <= elapsedTime
                         && currentBudget - zombie.Cost >= 0
-                        && ZombieTypeLimitNotExceeded(zombie, _currentSpawnZombieSet))
+                        && EnemyTypeLimitNotExceeded(zombie, _currentSpawnEnemySet))
                     {
-                        _currentSpawnZombieSet.Add(zombie.ZombiePrefabIdentifier);
+                        _currentSpawnEnemySet.Add(zombie.EnemyPrefabIdentifier);
                         currentBudget -= zombie.Cost;
-                        Debug.LogFormat("ZombieSpawned {0}", zombie.ZombiePrefabIdentifier.prefabName);
+                        Debug.LogFormat("EnemySpawned {0}", zombie.EnemyPrefabIdentifier.prefabName);
                         Debug.LogFormat("Budget: {0}", currentBudget);
                     }
                 }
                 
-                if (addZobiesCount == _currentSpawnZombieSet.Count)
+                if (addZobiesCount == _currentSpawnEnemySet.Count)
                     break;
                 
             }
 
             //TODO: дозаполнение сетапа последним зомби в списке возможных,
             //если бюджет закончился, но общее количество зомби не достигло предела
-            var limitRemainder = Phases[CurrentPhaseIndex].OverallLimit - _currentSpawnZombieSet.Count -
-                                 _aliveZombiesAI.Count;
+            var limitRemainder = Phases[CurrentPhaseIndex].OverallLimit - _currentSpawnEnemySet.Count -
+                                 _aliveEnemiesAI.Count;
 
             if (limitRemainder > 0)
             {
-                var lastAvailableZombieIndex = Phases[CurrentPhaseIndex].AvailableZombie.Count - 1;
+                var lastAvailableEnemyIndex = Phases[CurrentPhaseIndex].AvailableEnemy.Count - 1;
                 for (int i = 0; i < limitRemainder; i++)
                 {
-                    if (Phases[CurrentPhaseIndex].AvailableZombie[lastAvailableZombieIndex].SpawnDelay <= elapsedTime)
-                        _currentSpawnZombieSet.Add(Phases[CurrentPhaseIndex].AvailableZombie[lastAvailableZombieIndex].ZombiePrefabIdentifier);
+                    if (Phases[CurrentPhaseIndex].AvailableEnemy[lastAvailableEnemyIndex].SpawnDelay <= elapsedTime)
+                        _currentSpawnEnemySet.Add(Phases[CurrentPhaseIndex].AvailableEnemy[lastAvailableEnemyIndex].EnemyPrefabIdentifier);
                 }
             }
              
-            if (_currentSpawnZombieSet.Count > 0)
+            if (_currentSpawnEnemySet.Count > 0)
             {
                 //TODO: посылаем спаунеру сет зомби для спауна
-                Spawner.Spawn(_currentSpawnZombieSet);
-                _currentSpawnZombieSet.Clear();
+                Spawner.Spawn(_currentSpawnEnemySet);
+                _currentSpawnEnemySet.Clear();
             }
 
         }
 
-        private bool ZombieTypeLimitNotExceeded(ZombieType zombie, List<PrefabIdentifier> currentZombieSetList)
+        private bool EnemyTypeLimitNotExceeded(EnemyType zombie, List<PrefabIdentifier> currentEnemySetList)
         {
             var counter = 0;
-            foreach (var zombieAI in _aliveZombiesAI)
+            foreach (var zombieAI in _aliveEnemiesAI)
             {
                 var identifier = zombieAI.GetComponent<PrefabIdentifier>();
-                if (zombie.ZombiePrefabIdentifier == identifier)
+                if (zombie.EnemyPrefabIdentifier == identifier)
                     counter++;
             }
 
-            foreach (var zombieIdentifier in currentZombieSetList)
+            foreach (var zombieIdentifier in currentEnemySetList)
             {
-                if (zombie.ZombiePrefabIdentifier == zombieIdentifier)
+                if (zombie.EnemyPrefabIdentifier == zombieIdentifier)
                     counter++;
             }
             
             Debug.LogFormat("Current next zombie count: {0}", counter);
 
-            if (counter < zombie.ZombieLimit)
+            if (counter < zombie.EnemyLimit)
                 return true;
             
             return false;
         }
         
-        private void ZombieIsSpawned(GameObject zombie)
+        private void EnemyIsSpawned(GameObject zombie)
         {
             var zombieAI = zombie.GetComponent<EmeraldAISystem>();
             if (zombieAI != null)
-                _aliveZombiesAI.Add(zombieAI);
+                _aliveEnemiesAI.Add(zombieAI);
         }
 
 
@@ -303,32 +303,32 @@ using UnityEngine.Serialization;
             double doubleWaitTime = Phases[CurrentPhaseIndex].PhaseDuration + PhotonNetwork.Time;
             double doubleRemainingPhaseTime = Phases[CurrentPhaseIndex].PhaseDuration;
             
-            if (_aliveZombiesAI.Count <= 0)
+            if (_aliveEnemiesAI.Count <= 0)
                 _photonView.RPC(nameof(RPC_SendToPlayersWaveTimeDelay), RpcTarget.All, doubleWaitTime, true);
             else
             {
-                _sendToPlayerRemainingZombiesCount = true;
-                _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfZombies), RpcTarget.All, _aliveZombiesAI.Count);
+                _sendToPlayerRemainingEnemiesCount = true;
+                _photonView.RPC(nameof(RPC_SendToPlayersRemainingNumberOfEnemies), RpcTarget.All, _aliveEnemiesAI.Count);
             }
 
 
             while (doubleWaitTime > PhotonNetwork.Time)
             {
-                if (_aliveZombiesAI.Count > 0 && _aliveZombiesAI.Count <= ZombieLimitForStartKillTimer &&
-                    _killZombieTimer == null)
+                if (_aliveEnemiesAI.Count > 0 && _aliveEnemiesAI.Count <= EnemyLimitForStartKillTimer &&
+                    _killEnemyTimer == null)
                 {
-                    _killZombieTimer = StartCoroutine(KillZombieTimer());
+                    _killEnemyTimer = StartCoroutine(KillEnemyTimer());
                     _zombieKillTimerStartedInCalmPhase = true;
-                    _sendToPlayerRemainingZombiesCount = true;
+                    _sendToPlayerRemainingEnemiesCount = true;
                 }
 
-                if (_aliveZombiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
+                if (_aliveEnemiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
                 {
-                    _sendToPlayerRemainingZombiesCount = false;
+                    _sendToPlayerRemainingEnemiesCount = false;
                     _photonView.RPC(nameof(RPC_SendToPlayersWaveTimeDelay), RpcTarget.All, doubleRemainingPhaseTime + PhotonNetwork.Time, true);
                     _zombieKillTimerStartedInCalmPhase = false;
-                    StopCoroutine(_killZombieTimer);
-                    _killZombieTimer = null;
+                    StopCoroutine(_killEnemyTimer);
+                    _killEnemyTimer = null;
                 }
 
                 doubleRemainingPhaseTime -= Time.deltaTime;
@@ -336,23 +336,23 @@ using UnityEngine.Serialization;
                 yield return null;
             }
 
-            while (_aliveZombiesAI.Count > 0 && _killZombieTimer == null)
+            while (_aliveEnemiesAI.Count > 0 && _killEnemyTimer == null)
             {
-                if (_aliveZombiesAI.Count <= ZombieLimitForStartKillTimer)
+                if (_aliveEnemiesAI.Count <= EnemyLimitForStartKillTimer)
                 {
-                    _killZombieTimer = StartCoroutine(KillZombieTimer());
+                    _killEnemyTimer = StartCoroutine(KillEnemyTimer());
                     _zombieKillTimerStartedInCalmPhase = true;
                 }
                 yield return null;
             }
              
 
-            while (_killZombieTimer != null)
+            while (_killEnemyTimer != null)
             {
-                if (_aliveZombiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
+                if (_aliveEnemiesAI.Count <= 0 && _zombieKillTimerStartedInCalmPhase)
                 {
-                    StopCoroutine(_killZombieTimer);
-                    _killZombieTimer = null;
+                    StopCoroutine(_killEnemyTimer);
+                    _killEnemyTimer = null;
                 }
                 
                 
@@ -360,7 +360,7 @@ using UnityEngine.Serialization;
             }
             
             _zombieKillTimerStartedInCalmPhase = false;
-            _sendToPlayerRemainingZombiesCount = false;
+            _sendToPlayerRemainingEnemiesCount = false;
             Phases[CurrentPhaseIndex].CalmPhaseEndEvents.Invoke();
             OnPhaseEnded();
         }
@@ -377,12 +377,12 @@ using UnityEngine.Serialization;
             
             while (doubleWaitTime > PhotonNetwork.Time)
             {
-                if ((spawnDelay <= 0 || (ForcedSpawn && _aliveZombiesAI.Count == 0))
+                if ((spawnDelay <= 0 || (ForcedSpawn && _aliveEnemiesAI.Count == 0))
                     && StopSpawnTimeLimit <= doubleWaitTime - PhotonNetwork.Time)
                 {
                     SpawnTick();
                     
-                    if (ForcedSpawn && _aliveZombiesAI.Count == 0)
+                    if (ForcedSpawn && _aliveEnemiesAI.Count == 0)
                         spawnDelay = Phases[CurrentPhaseIndex].SpawnTickDelay;
                     else
                         spawnDelay = Mathf.Abs(spawnDelay) + Phases[CurrentPhaseIndex].SpawnTickDelay;
@@ -397,23 +397,23 @@ using UnityEngine.Serialization;
             OnPhaseEnded();
         }
 
-        IEnumerator KillZombieTimer()
+        IEnumerator KillEnemyTimer()
         {
-            var delay = CalmPhaseZombieKillDelay;
+            var delay = CalmPhaseEnemyKillDelay;
             while (delay > 0)
             {
                 yield return null;
                 delay -= Time.deltaTime;
             }
             
-            KillAllAliveZombie();
-            _killZombieTimer = null;
+            KillAllAliveEnemy();
+            _killEnemyTimer = null;
         }
 
 
         [PunRPC]
         private void RPC_SendToPlayersWaveTimeDelay(double time, bool isLullPhase) => PlayersManagers.LocalPlayer.Tablet.StartWaveWaitTimer(time, isLullPhase);
         [PunRPC]
-        private void RPC_SendToPlayersRemainingNumberOfZombies(int count) => PlayersManagers.LocalPlayer.Tablet.SetRemainingNumberOfZombies(count);
+        private void RPC_SendToPlayersRemainingNumberOfEnemies(int count) => PlayersManagers.LocalPlayer.Tablet.SetRemainingNumberOfEnemies(count);
         
 }
